@@ -60,6 +60,8 @@ def load_kv(path: Path) -> dict:
 
 
 def load_config() -> dict:
+    if not (HOME / "settings.txt").exists() and (HOME / "settings.example.txt").exists():
+        shutil.copyfile(HOME / "settings.example.txt", HOME / "settings.txt")   # 처음 한 번. settings.txt 는 git 에 안 올려 pull 과 안 부딪힌다
     c = load_kv(HOME / "settings.txt")
     env = load_kv(HOME / ".env")
     key = os.environ.get("ANTHROPIC_API_KEY") or env.get("ANTHROPIC_API_KEY", "")
