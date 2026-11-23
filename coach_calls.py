@@ -1,7 +1,7 @@
 """
 == 운영 맥락 ==
-역할: 폰 통화 녹음(Syncthing 으로 PC 녹음 폴더에 넘어옴)을 받아써서, 코치가 수강생·업체 질문에 답한 내용을
-      「질문 → 답」 지식으로 쌓는다. 챗봇이 이 지식을 읽고 다른 수강생 질문에 코치 방식으로 답하게 하는 게 목적(자산화).
+역할: 폰 통화 녹음(Syncthing 으로 PC 녹음 폴더에 넘어옴)을 받아써서, 코치님께서 수강생·업체 질문에 답한 내용을
+      「질문 → 답」 지식으로 쌓는다. 챗봇이 이 지식을 읽고 다른 수강생 질문에 코치님 방식으로 답하게 하는 게 목적(자산화).
 입력: settings.txt 의 녹음폴더(하위 폴더까지) 안 소리 파일. .env 의 ANTHROPIC_API_KEY.
       받아쓰기: ffmpeg(16kHz 변환) + whisper-cli(whisper.cpp) + ggml 모델 파일. PC 안에서만 돈다.
       정리: Claude API(settings.txt 모델). 받아쓴 글만 보낸다(소리는 안 보냄).
@@ -11,7 +11,7 @@
 흐름: 새 파일 → 다 넘어왔는지 확인(크기 변화 없음) → 제외 상대면 버림 → 받아쓰기 → 질문·답 뽑기(개인정보 지움)
       → 기존 지식과 겹치면 합치고 아니면 새로 → md 다시 씀.
 의도적 미구현: 챗봇에 자동 올리기(챗봇 서비스가 정해지면 붙인다), 화자 구분, 받아쓴 원문 보관.
-마지막 점검: 2026-11-23 (맥에서 시험 녹음으로 끝까지. 윈도우는 코치 PC 첫 통화로 확인)
+마지막 점검: 2026-11-23 (맥에서 시험 녹음으로 끝까지. 윈도우는 코치님 PC 첫 통화로 확인)
 """
 import argparse
 import datetime as dt
@@ -69,7 +69,7 @@ def load_config() -> dict:
     def p(v, default):
         return Path(os.path.expanduser(v or default))
     return {
-        "inbox": p(c.get("녹음폴더"), str(home / "코치-녹음")),
+        "inbox": p(c.get("녹음폴더"), str(home / "코치님-녹음")),
         "whisper": c.get("whisper") or "whisper-cli",
         "ffmpeg": c.get("ffmpeg") or "ffmpeg",
         "model_file": p(c.get("받아쓰기모델"), str(home / ".whisper" / "ggml-large-v3-turbo.bin")),
@@ -77,10 +77,68 @@ def load_config() -> dict:
         "start": c.get("시작일") or "",
         "delete": (c.get("녹음지우기") or "예").strip() in ("예", "yes", "y", "1", "true"),
         "exclude": [x.strip() for x in (c.get("제외") or "").split(",") if x.strip()],
-        "coach": c.get("코치이름") or "코치",
+        "coach": c.get("코치님이름") or "코치님",
         "field": c.get("분야") or "",
         "api_key": key,
+        "chatbot": c.get("챗봇") or "",
+        "upload": c.get("올리기") or "",
     }
+
+
+def set_setting(key: str, value: str):
+    """settings.txt 의 한 줄만 바꾼다(없으면 끝에 더함). 설명 줄·다른 값은 그대로"""
+    f = HOME / "settings.txt"
+    lines = f.read_text(encoding="utf-8-sig").splitlines() if f.exists() else []
+    done = False
+    for i, line in enumerate(lines):
+        if not line.lstrip().startswith("#") and "=" in line and line.split("=", 1)[0].strip() == key:
+            lines[i] = f"{key}={value}"
+            done = True
+    if not done:
+        lines.append(f"{key}={value}")
+    f.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+CHATBOTS = ["ChatGPT (GPTs)", "Claude 프로젝트", "다른 챗봇"]
+
+
+def ask_chatbot(cfg) -> None:
+    """사용 전에 코치님께 지식을 챗봇에 어떻게 넣을지 묻는다. 답은 settings.txt 챗봇·올리기 에 남긴다"""
+    if cfg["chatbot"] and cfg["upload"]:
+        return
+    if not sys.stdin or not sys.stdin.isatty():
+        log("챗봇에 넣는 방식이 아직 정해지지 않았습니다. start.bat 을 직접 켜서 답해 주세요(지식은 그대로 쌓입니다).")
+        return
+    print()
+    print("=" * 60)
+    print("사용 전에 하나만 정해 주세요.")
+    print("통화에서 정리된 질문·답(지식 폴더)을 어느 챗봇에 넣을까요?")
+    print("=" * 60)
+    for i, name in enumerate(CHATBOTS, 1):
+        print(f"  {i}. {name}")
+    print("  0. 아직 안 정함(다음에 켤 때 다시 묻습니다)")
+    pick = input("번호를 입력하고 Enter: ").strip()
+    if pick not in ("1", "2", "3"):
+        print("다음에 다시 묻겠습니다. 지식은 그동안에도 지식 폴더에 쌓입니다.\n")
+        return
+    bot = CHATBOTS[int(pick) - 1]
+    if pick == "3":
+        bot = input("챗봇 서비스 이름이나 주소를 적어 주세요: ").strip() or "다른 챗봇"
+    print()
+    print("넣는 방식은 어떻게 할까요?")
+    print("  1. 내가 직접 파일을 올림(일주일에 한 번쯤 지식\\전체.md 를 올림)")
+    print("  2. 자동으로 올라가게 하고 싶음(만들어 드린 분께 이 답을 알려 주시면 붙여 드립니다)")
+    up = "자동" if input("번호를 입력하고 Enter: ").strip() == "2" else "직접"
+    set_setting("챗봇", bot)
+    set_setting("올리기", up)
+    cfg["chatbot"], cfg["upload"] = bot, up
+    log(f"챗봇에 넣는 방식: {bot} · {up} 올리기 (settings.txt 에 적어 두었습니다)")
+    if up == "직접":
+        guide = {"ChatGPT (GPTs)": "GPT 편집 → 지식 → 파일 업로드에 지식\\전체.md",
+                 "Claude 프로젝트": "프로젝트 → 프로젝트 지식 → 파일 추가에 지식\\전체.md"}.get(bot, "그 챗봇의 문서·FAQ 올리는 칸에 지식\\전체.md")
+        print(f"올리는 곳: {guide}\n")
+    else:
+        print("자동 올리기는 아직 없습니다. 위 답(챗봇 이름)을 만들어 드린 분께 알려 주세요. 그때까지는 지식 폴더에 쌓입니다.\n")
 
 
 # ---------------------------------------------------------------- 기록
@@ -186,7 +244,7 @@ def transcribe(cfg, f: Path) -> str:
 class QA(BaseModel):
     topic: str          # 짧은 주제 이름(파일 이름이 됨)
     question: str       # 다른 수강생도 물을 법한 일반 질문
-    answer: str         # 코치 답 요지(왜 그런지, 예시 포함)
+    answer: str         # 코치님 답 요지(왜 그런지, 예시 포함)
     keywords: List[str]
 
 
@@ -232,11 +290,11 @@ def ask(cfg, system: str, user: str, schema):
 def extract(cfg, transcript: str, topics: List[str]) -> Extract:
     field = f" 분야는 {cfg['field']}이다." if cfg["field"] else ""
     system = (
-        f"너는 {cfg['coach']}의 통화 녹음을 받아쓴 글에서, 수강생이나 업체가 물은 것과 {cfg['coach']}가 답한 것을 뽑아 "
+        f"너는 {cfg['coach']}의 통화 녹음을 받아쓴 글에서, 수강생이나 업체가 물은 것과 {cfg['coach']}께서 답한 것을 뽑아 "
         f"챗봇 지식으로 만드는 정리 담당이다.{field}\n"
         "규칙:\n"
         "- 질문 하나에 답 하나로 나눈다. 다른 수강생도 물을 법한 일반 질문으로 바꿔 쓴다.\n"
-        "- 답은 코치가 실제로 한 말의 요지만 쓴다. 코치가 안 한 말을 지어내지 않는다. 이유와 예시를 코치가 말했으면 넣는다.\n"
+        f"- 답은 {cfg['coach']}께서 실제로 한 말의 요지만 쓴다. 하지 않은 말을 지어내지 않는다. 이유와 예시를 말했으면 넣는다.\n"
         "- 사람 이름, 업체명, 상호, 전화번호, 주소, 계좌, 매출·금액처럼 그 사람만의 정보는 모두 지운다. "
         "필요하면 '한 음식점', '월 매출이 적은 초기 업체'처럼 일반화한다.\n"
         "- 잡담, 일정 잡기, 결제·환불 처리, 사적 통화, 답이 없는 통화는 useful=false.\n"
@@ -416,6 +474,7 @@ def main():
     if args.once:
         log(f"처리 {run_once(cfg)}건")
         return
+    ask_chatbot(cfg)
     log(f"시작. 녹음폴더 {cfg['inbox']} 를 {LOOP_SEC}초마다 봅니다. 끄려면 이 창을 닫으세요.")
     while True:
         try:
