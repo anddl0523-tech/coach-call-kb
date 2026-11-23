@@ -1,0 +1,7 @@
+.env
+처리기록.json
+기록.log
+지식/
+__pycache__/
+*.zip
+.DS_Store
